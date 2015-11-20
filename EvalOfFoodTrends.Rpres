@@ -1,0 +1,250 @@
+Evaluation of Food Trends using Yelp dataset
+========================================================
+author: Lik Sin
+date: 9/11/15
+
+Food trends come and go, it is important for restaurants to be keenly aware of the latest whims and fancies of their customers.
+
+We analysed review data from Yelp dataset to provide insights on food trends and what mattered most to diners.
+
+Methods
+========================================================
+
+1. Load Yelp dataset and preprocess data
+2. Mine text from restaurant reviews
+3. Rank keywords by frequencies of words each year
+4. Generate linear model for each word (Predictor=year, Outcome=Rank)
+5. Sort words according to P-value of linear model
+6. Analyse results
+
+Results
+========================================================
+1. Assumption: Words with high frequency mattered most to reviewers
+2. Higher importance => Higher frequency => Higher rank
+3. Linear model shows trend over time
+4. Positive slope = increasing importance
+5. Negative slope = decreasing importance
+6. Low P-value = high probability of large change over time
+7. High P-value = high probability no change over time
+
+
+Results - Words with large change in importance (low P-values)
+========================================================
+left: 60%
+```{r, echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r,echo=FALSE}
+library(jsonlite)
+library("tm")
+library("SnowballC")
+library(lubridate)
+library(ggplot2)
+
+#Since we have opened and saved the data in .rds format, we use it to save time
+data_review=readRDS("data_reviewrds.rds")
+data_business=readRDS("data_businessrds.rds")
+
+#Flatten data
+data_reviewf=flatten(data_review)
+data_businessf=flatten(data_business)
+data_businessf$cat <- sapply(data_businessf$categories, toString)
+
+#Extract reviews targeted at restaurants
+data_businessRest=subset(data_businessf, grepl("^(.*[Rr]estaurant.*)", data_businessf$cat))
+restreview = data_reviewf[data_reviewf$business_id %in% data_businessRest$business_id, ]
+
+#Sort restaurant reviews by date
+restreview$date=as.Date(restreview$date, format="%Y-%m-%d")
+restreview=restreview[order(restreview$date), ]
+yearcount=table(format(restreview$date,"%Y"))
+```
+
+```{r, echo=FALSE}
+#remove year 2004
+yearcount=yearcount[2:12]
+restreview=restreview[11:dim(restreview)[1],]
+```
+
+```{r, echo=FALSE}
+#Create function to clean up text and output words with the highest frequency
+wordcount=function(text)
+{   # Load the data as a corpus
+    docs <- Corpus(VectorSource(text))
+    
+    # Clean up of regular expressions
+    toSpace <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+    docs <- tm_map(docs, toSpace, "/")
+    docs <- tm_map(docs, toSpace, "@")
+    docs <- tm_map(docs, toSpace, "\\|")
+    
+    # Convert the text to lower case, remove numbers, english common stopwords, punctuations, white spaces
+    docs <- tm_map(docs, content_transformer(tolower))
+    docs <- tm_map(docs, removeNumbers)
+    docs <- tm_map(docs, removeWords, stopwords("english"))
+    docs <- tm_map(docs, removePunctuation)
+    docs <- tm_map(docs, stripWhitespace)
+
+    # Text stemming
+    docs <- tm_map(docs, stemDocument)
+    
+    #Constructs Term Document Matrix, processing only words with higher frequency.
+    dtm <- TermDocumentMatrix(docs,control=list(wordLengths=c(1, Inf), bounds=list(global=c(floor(length(docs)*0.05), Inf))))
+    
+    #Coerce Term Document Matrix to matrix form and output 200 words with the highest frequency
+    m <- as.matrix(dtm)
+    v <- sort(rowSums(m),decreasing=TRUE)
+    d <- data.frame(word = names(v),freq=v)
+    if (nrow(d)<200)
+        d[(nrow(d)+1):200,]=NA
+    return(d[1:200,])
+}
+
+#Create data frame merging words with the highest frequencies for each year
+set.seed(1234)
+textfreq=data.frame(matrix(nrow=200,ncol=(dim(yearcount)*2)))
+for (i in 1:dim(yearcount))
+{
+    texts=subset(restreview$text, year(restreview$date)==as.numeric(names(yearcount[i])))
+    if (length(texts)>=100000)
+        texts=texts[sample(length(texts), 100000)]
+    textfreq[,(2*(i-1)+1):(2*(i-1)+2)]=wordcount(texts)
+    colnames(textfreq)[(2*(i-1)+1)]="word"
+    colnames(textfreq)[(2*(i-1)+2)]=names(yearcount[i])
+    
+    #merge top 200 words into one data frame
+    if ((2*(i-1)+1)<3)
+        mergedtextfreq=textfreq[,1:2]
+    else
+        mergedtextfreq=merge(mergedtextfreq,textfreq[(2*(i-1)+1):(2*(i-1)+2)], by = "word")
+}
+
+#Rank words according to their relative frequencies (Higher rank for higher frequency, highest=93, lowest=1)
+mergedtextrank = cbind(mergedtextfreq[1], apply(mergedtextfreq[-1], 2, rank))
+
+#Transpose rank dataframe
+tmergedtextrank=as.data.frame(matrix(nrow=11,ncol=94))
+tmergedtextrank[,1]=colnames(mergedtextrank[2:dim(mergedtextrank)[2]])
+tmergedtextrank[,1]=as.Date(paste0(tmergedtextrank[,1], '-01-01'))
+tmergedtextrank[,2:(dim(mergedtextrank)[1]+1)]=t(mergedtextrank[,2:dim(mergedtextrank)[2]])
+colnames(tmergedtextrank)=c("year",as.character(mergedtextrank$word))
+
+#Generate linear model (predictor=year) and rank each word according to the respective p-value. We also obtain the slope, and the rank of the word in 2015.
+textfit=as.data.frame(matrix(nrow=(dim(tmergedtextrank)[2]-1),ncol=4))
+colnames(textfit)=c("word","pvalue","slope","2015rank")
+for (i in 2:dim(tmergedtextrank)[2])
+{
+    fit=lm(tmergedtextrank[,i] ~ as.numeric(year), data = tmergedtextrank)
+    textfit[(i-1),1]=colnames(tmergedtextrank[i])
+    textfit[(i-1),2]=summary(fit)$coefficients[2,4]
+    textfit[(i-1),3]=summary(fit)$coefficients[2,1]
+    textfit[(i-1),4]=tmergedtextrank[dim(tmergedtextrank)[1],i]
+}
+textfit=textfit[order(textfit$pvalue),]
+```
+
+```{r, echo=FALSE}
+fit=lm(servic ~ as.numeric(year), data = tmergedtextrank)
+p1 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=servic)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Service", x="Year", y="Ranking")
+
+fit=lm(steak ~ as.numeric(year), data = tmergedtextrank)
+p2 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=steak)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Steak", x="Year", y="Ranking")
+
+fit=lm(wait ~ as.numeric(year), data = tmergedtextrank)
+p3 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=wait)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Wait", x="Year", y="Ranking")
+
+fit=lm(night ~ as.numeric(year), data = tmergedtextrank)
+p4 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=night)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Night", x="Year", y="Ranking")
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+    require(grid)
+    
+    # Make a list from the ... arguments and plotlist
+    plots <- c(list(...), plotlist)
+    
+    numPlots = length(plots)
+    
+    # If layout is NULL, then use 'cols' to determine layout
+    if (is.null(layout)) {
+        # Make the panel
+        # ncol: Number of columns of plots
+        # nrow: Number of rows needed, calculated from # of cols
+        layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                         ncol = cols, nrow = ceiling(numPlots/cols))
+    }
+    
+    if (numPlots==1) {
+        print(plots[[1]])
+        
+    } else {
+        # Set up the page
+        grid.newpage()
+        pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+        
+        # Make each plot, in the correct location
+        for (i in 1:numPlots) {
+            # Get the i,j matrix positions of the regions that contain this subplot
+            matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+            
+            print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                            layout.pos.col = matchidx$col))
+        }
+    }
+}
+
+
+multiplot(p1, p2, p3, p4, cols=2)
+```
+***
+
+Low P-value words
+- Positive slope: "service", "chicken", "wait"
+- Negative slope: "steak", "night"
+
+
+Words with consistent importance over time (high P-values)
+========================================================
+left: 60%
+
+```{r, echo=FALSE}
+fit=lm(price ~ as.numeric(year), data = tmergedtextrank)
+p1 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=price)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Price", x="Year", y="Ranking")
+
+fit=lm(area ~ as.numeric(year), data = tmergedtextrank)
+p2 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=area)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Area", x="Year", y="Ranking")
+
+multiplot(p1, p2)
+```
+
+***
+
+High P-value words
+- High rank: "price", "pizza"
+- Low rank: "area", "salad"
