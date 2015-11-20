@@ -1,0 +1,293 @@
+---
+title: "Evaluation Of Food Trends"
+author: "Tan Lik Sin"
+date: "7 November 2015"
+output: pdf_document
+geometry: margin=0.75in
+---
+
+# INTRODUCTION
+Food trends come and go, it is often important for restaurants to be keenly aware of what customers want most when they dine. Mining text from Yelp dataset provided as part of Yelp Dataset Challenge, we looked at frequencies of keywords in restaurant reviews to identify what diners pay attention to when they patronise a restaurant. Is it service that is often mentioned in reviews? Or is steak more frequently mentioned?  
+In this study, we assumed that the higher the frequency of a keyword, the more important the word is to reviewers. We ranked the relative frequencies of keywords for each year and performed linear modelling on the words to determine their trends. The METHODS section described the process used to arrive at the final dataset for our analysis.  
+We looked at how these keywords increase or decrease in frequency over time to identify food trends. We also looked at keywords that remained consistent in their importance to reviewers over time. The RESULTS section illustrated our analysis and in the DISCUSSION section, we interpreted the results of our analysis and concluded our findings. 
+
+# METHODS
+This section describes the methods used to obtain our results. We first loaded the necessary data and required library files. We then preprocessed the data by flattening the list of lists, extracting only restaurant businesses relevant for our analysis. The reviews were sorted according to dates and the distribution by time was identified.  
+Text mining on the reviews were performed to extract keywords with high frequencies for each year. The key words were ranked according to their frequencies and statistical modelling was applied. A p-value was  obtained from the linear model employed on each word with time as predictor. The p-value was used to determine the significance in the trend of the keyword ranking, which in turn provided us with insights on the food trends over time as described in the RESULTS section.
+
+## Load necessary data and library files
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+1. Load library files that will be used (Code not shown)
+```{r, echo=FALSE}
+library(jsonlite)
+library("tm")
+library("SnowballC")
+library(lubridate)
+library(ggplot2)
+```
+
+2. Load Yelp data into RStudio (Code not shown)
+```{r, eval=FALSE, echo=FALSE}
+#Read in reviews data file
+json_file = "yelp_academic_dataset_review.json"
+data_review <- stream_in(file(json_file),flatten=TRUE)
+
+#Read in business data file
+json_file2 = "yelp_academic_dataset_business.json"
+data_business <- stream_in(file(json_file2),flatten=TRUE)
+```
+
+```{r,echo=FALSE}
+#Since we have opened and saved the data in .rds format, we use it to save time
+data_review=readRDS("data_reviewrds.rds")
+data_business=readRDS("data_businessrds.rds")
+```
+
+## Preprocessing data and exploratory analysis
+When opened in R, the Json data appeared as list of lists in R data frame. We needed to unlist and flatten the data as much as possible to enable easy processing. We then selected only reviews that were addressed to restaurant businesses. Reviews were reordered by the year that they were composed.
+
+3. Flatten data, especially the categories column in business data file (Code not shown)
+```{r, echo=FALSE}
+data_reviewf=flatten(data_review)
+data_businessf=flatten(data_business)
+data_businessf$cat <- sapply(data_businessf$categories, toString)
+```
+
+4. Extract reviews targeted at restaurants (Code not shown)
+```{r, echo=FALSE}
+data_businessRest=subset(data_businessf, grepl("^(.*[Rr]estaurant.*)", data_businessf$cat))
+restreview = data_reviewf[data_reviewf$business_id %in% data_businessRest$business_id, ]
+```
+
+5. Sort restaurant reviews by date (Code not shown)
+```{r, echo=FALSE}
+restreview$date=as.Date(restreview$date, format="%Y-%m-%d")
+restreview=restreview[order(restreview$date), ]
+yearcount=table(format(restreview$date,"%Y"))
+```
+
+6. We found that year 2004 contained only 10 reviews on restaurant. We remove year 2004 due to lack of information. (Code not shown)
+```{r, echo=FALSE}
+print(yearcount)
+yearcount=yearcount[2:12]
+restreview=restreview[11:dim(restreview)[1],]
+```
+
+## Text mining in reviews
+We want to identify frequency of words used in restaurant reviews over time so as to pick up food trends. We divided the reviews by the year it was made and determined the frequency of keywords used in the reviews. We created a function to convert the text into a format suitable for processing, cleaned up the text in the reviews, and output 200 words with the highest frequencies for each year.  
+We randomly selected up to 100000 reviews for each year to determine high frequency words. The cap of 100000 reviews was selected to reduce the excessive amount of processing time needed for text mining.  
+We merged the top 200 highest frequency words of each year into a single dataframe. By doing that, we implicitly only considered high frequency words that made it to the top 200 every year. There were 93 words common to the top 200 of each year.  
+We ranked the words in the merged list to determine their relative frequencies (higher rank = higher frequency) for each year.
+
+7. Create function to clean up text and output words with the highest frequency (Code not shown)
+```{r, echo=FALSE}
+wordcount=function(text)
+{   # Load the data as a corpus
+    docs <- Corpus(VectorSource(text))
+    
+    # Clean up of regular expressions
+    toSpace <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+    docs <- tm_map(docs, toSpace, "/")
+    docs <- tm_map(docs, toSpace, "@")
+    docs <- tm_map(docs, toSpace, "\\|")
+    
+    # Convert the text to lower case, remove numbers, english common stopwords, punctuations, white spaces
+    docs <- tm_map(docs, content_transformer(tolower))
+    docs <- tm_map(docs, removeNumbers)
+    docs <- tm_map(docs, removeWords, stopwords("english"))
+    docs <- tm_map(docs, removePunctuation)
+    docs <- tm_map(docs, stripWhitespace)
+
+    # Text stemming
+    docs <- tm_map(docs, stemDocument)
+    
+    #Constructs Term Document Matrix, processing only words with higher frequency.
+    dtm <- TermDocumentMatrix(docs,control=list(wordLengths=c(1, Inf), bounds=list(global=c(floor(length(docs)*0.05), Inf))))
+    
+    #Coerce Term Document Matrix to matrix form and output 200 words with the highest frequency
+    m <- as.matrix(dtm)
+    v <- sort(rowSums(m),decreasing=TRUE)
+    d <- data.frame(word = names(v),freq=v)
+    if (nrow(d)<200)
+        d[(nrow(d)+1):200,]=NA
+    return(d[1:200,])
+}
+```
+
+8. Create a data frame merging words with the highest frequencies for each year (Code not shown)
+```{r, echo=FALSE}
+set.seed(1234)
+textfreq=data.frame(matrix(nrow=200,ncol=(dim(yearcount)*2)))
+for (i in 1:dim(yearcount))
+{
+    texts=subset(restreview$text, year(restreview$date)==as.numeric(names(yearcount[i])))
+    if (length(texts)>=100000)
+        texts=texts[sample(length(texts), 100000)]
+    textfreq[,(2*(i-1)+1):(2*(i-1)+2)]=wordcount(texts)
+    colnames(textfreq)[(2*(i-1)+1)]="word"
+    colnames(textfreq)[(2*(i-1)+2)]=names(yearcount[i])
+    
+    #merge top 200 words into one data frame
+    if ((2*(i-1)+1)<3)
+        mergedtextfreq=textfreq[,1:2]
+    else
+        mergedtextfreq=merge(mergedtextfreq,textfreq[(2*(i-1)+1):(2*(i-1)+2)], by = "word")
+}
+```
+
+9. Rank words according to their relative frequencies (Higher rank for higher frequency, highest=93, lowest=1) (Code not shown)
+```{r, echo=FALSE}
+mergedtextrank = cbind(mergedtextfreq[1], apply(mergedtextfreq[-1], 2, rank))
+```
+
+10. Transpose rank dataframe (Code not shown)
+```{r, echo=FALSE}
+tmergedtextrank=as.data.frame(matrix(nrow=11,ncol=94))
+tmergedtextrank[,1]=colnames(mergedtextrank[2:dim(mergedtextrank)[2]])
+tmergedtextrank[,1]=as.Date(paste0(tmergedtextrank[,1], '-01-01'))
+tmergedtextrank[,2:(dim(mergedtextrank)[1]+1)]=t(mergedtextrank[,2:dim(mergedtextrank)[2]])
+colnames(tmergedtextrank)=c("year",as.character(mergedtextrank$word))
+```
+
+## Statistical Modelling
+We now have words with the highest frequencies for each year. We assumed that words deemed more important to diners would appear more often and thus ranked higher. Having populated a data frame with high frequency words from reviews over the years, we looked at trends of these words over time. We generated linear models for rank of each word with time as predictor and obtained the p-value for each word to determine if the change in rank over the years was significant. The null hypothese was that there is no change over time. A low p-value suggests strong evidence against the null hypothesis.
+
+11. Generate linear model (predictor=year) and rank each word according to the respective p-value. We also obtain the slope, and the rank of the word in 2015. (Code not shown)
+```{r, echo=FALSE}
+textfit=as.data.frame(matrix(nrow=(dim(tmergedtextrank)[2]-1),ncol=4))
+colnames(textfit)=c("word","pvalue","slope","2015rank")
+for (i in 2:dim(tmergedtextrank)[2])
+{
+    fit=lm(tmergedtextrank[,i] ~ as.numeric(year), data = tmergedtextrank)
+    textfit[(i-1),1]=colnames(tmergedtextrank[i])
+    textfit[(i-1),2]=summary(fit)$coefficients[2,4]
+    textfit[(i-1),3]=summary(fit)$coefficients[2,1]
+    textfit[(i-1),4]=tmergedtextrank[dim(tmergedtextrank)[1],i]
+}
+textfit=textfit[order(textfit$pvalue),]
+```
+
+# RESULTS
+We looked at words with the lowest p-values and words with the highest. A word with low p-value has low probability that there is no change in rank over time. This meant that rank change over time was significant. This would be of interest to us as it showed significant increase or decrease in the importance of the word to reviewers of restaurants.  
+Conversely, a word with high p-value has high probability that there is no change in rank over time. This meant that there is insufficient evidence to suggest that the rank changed over time. This would also be of interest to us as it showed the consistent importance of the word to reviewers of restaurants.
+
+12. We look at top 20 words with the lowest p-values, the slope and the rank in 2015
+```{r}
+head(textfit, 20)
+```
+
+13. We look at top 20 words with the highest p-values, the slope and the rank in 2015
+```{r}
+tail(textfit, 20)
+```
+
+# DISCUSSION
+The RESULTS section displayed the top 20 words with the lowest and highest P-values and their corresponding slopes and 2015 rank. A low P-value indicates that there is significant change in rank while a high P-value suggests little probability of change in rank. A word with positive slope has increasing rank and hence importance over time while the converse is true. A high 2015 rank demonstrates a high frequency of the word in 2015 reviews and thus are important to reviewers while a low rank suggests that the words are lower in importance.  
+For top 20 words with the lowest P-values, it is important to pay attention to words with positive slope and a high 2015 rank. These words are increasing in importance and are relatively important to reviewers in recent times. From the table generated in (12), words like "service", "chicken" and "wait" have positive slope and high 2015 rank. It suggests that reviewers are paying increasing attention and emphasized in recent times the service a restaurant provides, chicken as an ingredient to the food they eat, and the amount of time they have to wait for seats to the restaurant. The ranks of "service" and "wait" over the years as well as the regression lines are illustrated in the plot of (14). 
+
+14. We look at keywords "Service", "Wait", "Steak" and "Night" to see how their importance changed over time (Code not shown)  
+```{r, echo=FALSE}
+fit=lm(servic ~ as.numeric(year), data = tmergedtextrank)
+p1 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=servic)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Service", x="Year", y="Ranking")
+
+fit=lm(steak ~ as.numeric(year), data = tmergedtextrank)
+p2 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=steak)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Steak", x="Year", y="Ranking")
+
+fit=lm(wait ~ as.numeric(year), data = tmergedtextrank)
+p3 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=wait)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Wait", x="Year", y="Ranking")
+
+fit=lm(night ~ as.numeric(year), data = tmergedtextrank)
+p4 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=night)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Night", x="Year", y="Ranking")
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+    require(grid)
+    
+    # Make a list from the ... arguments and plotlist
+    plots <- c(list(...), plotlist)
+    
+    numPlots = length(plots)
+    
+    # If layout is NULL, then use 'cols' to determine layout
+    if (is.null(layout)) {
+        # Make the panel
+        # ncol: Number of columns of plots
+        # nrow: Number of rows needed, calculated from # of cols
+        layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                         ncol = cols, nrow = ceiling(numPlots/cols))
+    }
+    
+    if (numPlots==1) {
+        print(plots[[1]])
+        
+    } else {
+        # Set up the page
+        grid.newpage()
+        pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+        
+        # Make each plot, in the correct location
+        for (i in 1:numPlots) {
+            # Get the i,j matrix positions of the regions that contain this subplot
+            matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+            
+            print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                            layout.pos.col = matchidx$col))
+        }
+    }
+}
+
+
+multiplot(p1, p2, p3, p4, cols=2)
+```
+On the other hand, it is equally important to consider words with negative slope and a low 2015 rank as these words are decreasing in importance and might not be relevant to reviewers in 2015. These words include "steak" and "night" and suggests that having a steak at night might not be the highest on a customer's mind. The ranks of "steak" and "night" as well as the corresponding regression lines are illustrated in the plot of (14).  
+For top 20 words with the highest P-values, we noted the relatively flat slope as compared to words with low P-values. This is consistent with the high P-values in suggesting little change in the rank over the years. From the table generated in (13), we noted that words like "price" and "pizza" have relatively high ranks. This suggests that customers are relatively conscious about the pricing of a restaurant and pizza remained consistent in its popularity over time. On the other hand, "area" and "salad" received relatively lower rank in 2015. This may suggest that customers are not sensitive to the neighbourhood of the restaurant and that salad is consistently less popular than pizza. The ranks of "Price" and "Area" are plotted in (15).  
+
+15. We look at keywords "Price" and "area" to see how consistent the keywords were over time. (Code not shown)  
+```{r, echo=FALSE}
+fit=lm(price ~ as.numeric(year), data = tmergedtextrank)
+p1 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=price)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Price", x="Year", y="Ranking")
+
+fit=lm(area ~ as.numeric(year), data = tmergedtextrank)
+p2 = ggplot(tmergedtextrank, aes(x=as.Date(year), y=area)) +
+    geom_point() + geom_abline(intercept=coef(fit)[1], slope=coef(fit)[2], col="red") +
+    labs(title="Trend of word: Area", x="Year", y="Ranking")
+
+multiplot(p1, p2)
+```
+Returning to our objective of this study, we have identified an increasing trend in the importance of service provided by restaurant, food containing chicken, as well as length of time a customer has to wait. Restaurateurs or potential restaurant owners will want to pay attention to the service and time a customer has to wait as this will likely impact their reviews on Yelp. Equal attention should also be focused on dishes with chicken. We have also identified steak and night with a decreasing trend in importance so restaurateurs might want to focus less on marketing and publicising their steaks.  
+Perhaps unsurprisingly, price and pizza are often mentioned in food reviews, consistently over the years. This showed that diners remained price sensitive and restaurateurs must adopt a brilliant pricing strategy to attract customers. Pizza remained an important item that should remain in the menu for a long time to come. On the other hand, area and salad are less frequently mentioned. If the restaurant is attractive to customers, the neighbourhood should not matter much. Given the rise in "eat clean" on social media, it seemed a little baffling that salad, the dish often associated with healthy food, remained lower in ranking than pizza.
+
+## Further studies
+Due to constraints of time, this study could only cover a limited scope of what might have been achieveable given the rich dataset available. We described what can further this study below:  
+1. By merging the keywords with high frequencies in each year, we implicitly only considered high frequency words that made it to the top 200 every year. Words that only appeard in the top 200 in later years were not considered in the study. These emerging keywords and thus food trends can be considered in further studies.  
+2. We arranged the keywords by the year the reviews were made. We can further analyse intra year seasonal food trends by looking at the frequency distribution in finer time resolution.  
+3. By analysing single words, we are missing out on the context of the reviews. The context might be important for deeper understanding of the preferences of diners.  
+4. As observable in the top 20 words, there remained many words that were not useful in our analysis. More detailed data cleaning can be performed such that more word trends might appear.
+
